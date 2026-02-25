@@ -4,18 +4,12 @@ from pyppeteer import launch
 from bs4 import BeautifulSoup
 
 
-# ⭐ CHANGE if Chrome path different
-CHROME_PATH = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+from pyppeteer import launch
 
-
-# --------------------------------------------
-# ⭐ Fetch LinkedIn page HTML
-# --------------------------------------------
 async def fetch_page_html(url: str) -> str:
 
     browser = await launch(
         headless=True,
-        executablePath=CHROME_PATH,
         args=[
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -26,17 +20,10 @@ async def fetch_page_html(url: str) -> str:
     page = await browser.newPage()
 
     await page.setUserAgent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "Mozilla/5.0 (X11; Linux x86_64)"
     )
 
-    await page.goto(url, timeout=60000, waitUntil="networkidle2")
-
-    # Scroll to load jobs
-    await page.evaluate("""
-        window.scrollTo(0, document.body.scrollHeight)
-    """)
-
-    await asyncio.sleep(3)
+    await page.goto(url, timeout=60000)
 
     html = await page.content()
 
