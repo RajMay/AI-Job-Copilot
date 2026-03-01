@@ -1,25 +1,49 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from app.scrapers.job_scraper import search_jobs
+from typing import List
+
+from app.services.job_search_service import search_jobs_from_resume
 
 router = APIRouter()
 
 
-class JobQuery(BaseModel):
-    query: str
+class ResumeProfile(BaseModel):
+    roles: List[str] = []
+    skills: List[str] = []
+    experience_years: int = 0
+    education: List[str] = []
+    preferred_locations: List[str] = []
+    seniority_level: str = ""
 
 
 @router.post("/jobs")
-async def find_jobs(data: JobQuery):
+async def find_jobs(profile: ResumeProfile):
+    """
+    Step 2 of the pipeline:
+    - Receives parsed profile from /upload-resume
+    - Generates search queries
+    - Scrapes LinkedIn
+    - Returns deduplicated job listings
+    """
 
-    print("🔎 Query:", data.query)
+    # ✅ Guard against empty profile — nothing useful to search with
+    if not profile.roles and not profile.skills:
+        raise HTTPException(
+            status_code=400,
+            detail="Profile must contain at least roles or skills to search jobs."
+        )
 
-    jobs = await search_jobs(data.query)
+    try:
+        jobs = await search_jobs_from_resume(profile.dict())
 
-    print("📦 Jobs returned:", jobs)
+        return {
+            "total": len(jobs),
+            "results": jobs
+        }
 
-    return {"results": jobs}
-
-
-
-   
+    except Exception as e:
+        print(f"❌ Job search error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Job search failed: {str(e)}"
+        )

@@ -1,37 +1,65 @@
-from PyPDF2 import PdfReader
+import os
+from pypdf import PdfReader  # ✅ pypdf is the maintained fork of PyPDF2
 from docx import Document
 
 
 def extract_text_from_pdf(file_path: str) -> str:
-    reader = PdfReader(file_path)
-    text = ""
-    for page in reader.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text += page_text + "\n"
-    return text
+    """Extract text from a PDF file."""
+    try:
+        reader = PdfReader(file_path)
+        text = ""
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+        return text.strip()
+    except Exception as e:
+        raise ValueError(f"Failed to read PDF: {e}")
 
 
 def extract_text_from_docx(file_path: str) -> str:
-    doc = Document(file_path)
-    text = "\n".join(p.text for p in doc.paragraphs)
-    return text
+    """Extract text from a .docx Word file."""
+    try:
+        doc = Document(file_path)
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    except Exception as e:
+        raise ValueError(f"Failed to read DOCX: {e}")
 
 
 def extract_text_from_txt(file_path: str) -> str:
-    with open(file_path, "r", encoding="utf-8") as f:
-        return f.read()
+    """Extract text from a plain .txt file."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except UnicodeDecodeError:
+        # ✅ Fallback encoding for non-UTF-8 files
+        with open(file_path, "r", encoding="latin-1") as f:
+            return f.read().strip()
+    except Exception as e:
+        raise ValueError(f"Failed to read TXT: {e}")
 
 
 def extract_text(file_path: str) -> str:
-    if file_path.endswith(".pdf"):
+    """
+    Extract text from a resume file.
+    Supports: .pdf, .docx, .txt
+    """
+
+    # ✅ Check file exists before processing
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    # ✅ Check file is not empty
+    if os.path.getsize(file_path) == 0:
+        raise ValueError(f"File is empty: {file_path}")
+
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext == ".pdf":
         return extract_text_from_pdf(file_path)
-
-    elif file_path.endswith(".docx"):
+    elif ext == ".docx":
         return extract_text_from_docx(file_path)
-
-    elif file_path.endswith(".txt"):
+    elif ext == ".txt":
         return extract_text_from_txt(file_path)
-
     else:
-        raise ValueError("Unsupported file format")
+        raise ValueError(f"Unsupported file format: '{ext}'. Supported: .pdf, .docx, .txt")

@@ -1,20 +1,17 @@
-fastapi
-uvicorn[standard]
-python-multipart
-pydantic
-python-dotenv
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+starlette==0.37.2
+python-multipart==0.0.9
+pydantic==2.7.1
+python-dotenv==1.0.1
 
-PyPDF2
-python-docx
+pypdf==4.2.0
+python-docx==1.1.2
 
-sentence-transformers
-pinecone
-numpy
+beautifulsoup4==4.12.3
+lxml==5.2.2
+playwright
 
-beautifulsoup4
-lxml
-pyppeteer
+groq==0.9.0
 
-groq
-
-requests
+requests==2.32.3
