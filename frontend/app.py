@@ -1,5 +1,7 @@
 import base64
+import html
 import os
+import re
 
 import streamlit as st
 import requests
@@ -12,6 +14,28 @@ API_URL = os.environ.get(
 ).rstrip("/")
 
 REFINE_WIDGET_KEYS = ("refine_roles", "refine_skills", "refine_locations", "refine_seniority")
+
+
+def sanitize_job_text(value, max_len: int = 500) -> str:
+    """Remove HTML tags from scraper noise, then escape so cards render safely."""
+    if value is None:
+        return ""
+    text = str(value)
+    text = re.sub(r"<[^>]+>", " ", text, flags=re.IGNORECASE)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if max_len and len(text) > max_len:
+        text = text[: max_len - 1] + "…"
+    return html.escape(text)
+
+
+def sanitize_job_href(url) -> str:
+    if not url or url == "N/A":
+        return ""
+    u = str(url).strip()
+    if not (u.startswith("http://") or u.startswith("https://")):
+        return ""
+    return html.escape(u, quote=True)
 
 
 def clear_refine_widget_keys():
@@ -471,7 +495,8 @@ h1, h2, h3 { font-family: 'Cormorant Garamond', serif !important; }
 # ─────────────────────────────────────────
 
 def source_class(source: str) -> str:
-    return f"source-{source.lower().replace(' ', '')}"
+    safe = re.sub(r"[^a-zA-Z0-9]+", "", (source or "unknown").lower())[:24] or "unknown"
+    return f"source-{safe}"
 
 def render_profile_card(profile: dict):
     roles = profile.get("roles", [])
@@ -528,25 +553,35 @@ def render_job_cards(jobs: list):
     # Cards grid
     cards_html = '<div class="jobs-grid">'
     for job in jobs:
-        title = job.get("title", "Unknown Role")
-        company = job.get("company", "Unknown Company")
-        location = job.get("location", "")
-        link = job.get("link", "#")
-        source = job.get("source", "")
-        src_cls = source_class(source)
+        title = sanitize_job_text(job.get("title") or "Unknown Role")
+        company = sanitize_job_text(job.get("company") or "Unknown Company")
+        location = sanitize_job_text(job.get("location") or "")
+        link = job.get("link", "") or ""
+        source = sanitize_job_text(job.get("source") or "")
+        src_cls = source_class(job.get("source") or "")
 
-        link_html = f'<a class="job-link" href="{link}" target="_blank">View Position →</a>' if link and link != "N/A" else ""
-        list_co = job.get("matched_sheet_company") or ""
-        list_html = (
-            f"<div class='job-location'>✦ From your list: {list_co}</div>" if list_co else ""
+        safe_href = sanitize_job_href(link)
+        link_html = (
+            f'<a class="job-link" href="{safe_href}" target="_blank" rel="noopener noreferrer">View Position →</a>'
+            if safe_href
+            else ""
         )
+        list_co_raw = job.get("matched_sheet_company") or ""
+        list_co = sanitize_job_text(list_co_raw)
+        list_html = (
+            f"<div class='job-location'>✦ From your list: {list_co}</div>" if list_co_raw else ""
+        )
+
+        loc_block = ""
+        if location and job.get("location") not in (None, "", "N/A"):
+            loc_block = f"<div class='job-location'>📍 {location}</div>"
 
         cards_html += f"""
         <div class="job-card">
             <div class="job-source-badge {src_cls}">{source}</div>
             <div class="job-title">{title}</div>
             <div class="job-company">{company}</div>
-            {"<div class='job-location'>📍 " + location + "</div>" if location and location != "N/A" else ""}
+            {loc_block}
             {list_html}
             {link_html}
         </div>"""
