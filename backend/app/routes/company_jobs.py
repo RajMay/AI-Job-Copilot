@@ -17,6 +17,8 @@ router = APIRouter()
 async def jobs_from_company_excel(
     file: UploadFile = File(...),
     fill_spreadsheet: str = Form("false"),
+    india_only: str = Form("false"),
+    india_states: str = Form(""),
 ):
     """
     Upload a .xlsx with a Company column (or company names in column C).
@@ -53,10 +55,16 @@ async def jobs_from_company_excel(
         )
 
     max_c = int(os.getenv("COMPANY_LIST_MAX", str(DEFAULT_MAX_COMPANIES)))
+    want_india = india_only.lower() in ("true", "1", "yes", "on")
+    state_list = [s.strip() for s in (india_states or "").split(",") if s.strip()]
 
     try:
         results, meta = await search_jobs_for_company_list(
-            companies, max_companies=max_c, concurrency=4
+            companies,
+            max_companies=max_c,
+            concurrency=4,
+            india_only=want_india,
+            india_states=state_list if state_list else None,
         )
     except Exception as e:
         print(f"❌ Company job search error: {e}")

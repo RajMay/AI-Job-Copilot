@@ -6,12 +6,13 @@ Results are filtered to analyst-style titles and matched to the sheet company na
 import asyncio
 import re
 from io import BytesIO
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 
 from app.scrapers.job_scraper import search_jobs
+from app.services.location_filter import filter_jobs_by_india_options
 
 # Limit work per request (scraping is slow; many sites rate-limit)
 DEFAULT_MAX_COMPANIES = 10
@@ -219,6 +220,8 @@ async def search_jobs_for_company_list(
     *,
     max_companies: int = DEFAULT_MAX_COMPANIES,
     concurrency: int = 4,
+    india_only: bool = False,
+    india_states: Optional[List[str]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     For each company, run data-analyst and business-analyst queries (bounded concurrency).
@@ -226,9 +229,10 @@ async def search_jobs_for_company_list(
     """
     take = companies[: max(1, min(max_companies, 50))]
     queries: List[str] = []
+    loc_suffix = " India" if india_only else ""
     for c in take:
-        queries.append(f"{c} data analyst")
-        queries.append(f"{c} business analyst")
+        queries.append(f"{c} data analyst{loc_suffix}")
+        queries.append(f"{c} business analyst{loc_suffix}")
 
     if len(queries) > MAX_QUERIES_TOTAL:
         queries = queries[:MAX_QUERIES_TOTAL]
@@ -271,11 +275,23 @@ async def search_jobs_for_company_list(
         enriched["matched_sheet_company"] = sheet_match
         matched.append(enriched)
 
+    after_analyst = len(matched)
+    st_list = [s.strip() for s in (india_states or []) if s and str(s).strip()]
+    if india_only or st_list:
+        matched = filter_jobs_by_india_options(
+            matched,
+            india_only=india_only,
+            india_states=st_list if st_list else None,
+        )
+
     meta = {
         "companies_requested": len(companies),
         "companies_searched": len(take),
         "queries_run": len(queries),
         "raw_unique": len(raw),
+        "matched_after_analyst_filter": after_analyst,
         "matched": len(matched),
+        "india_only": india_only,
+        "india_states": st_list,
     }
     return matched, meta

@@ -6,14 +6,41 @@ import re
 import streamlit as st
 import requests
 
-# Production default: deployed API. For local backend, set before `streamlit run`:
-#   Windows PowerShell:  $env:AI_JOB_COPILOT_API_URL="http://127.0.0.1:8000"
-#   Streamlit Cloud:     AI_JOB_COPILOT_API_URL in Secrets or app settings if URL differs
-API_URL = os.environ.get(
-    "AI_JOB_COPILOT_API_URL", "https://ai-job-copilot-1.onrender.com"
-).rstrip("/")
+# Default: deployed FastAPI (Render). For local backend, set:
+#   PowerShell:  $env:AI_JOB_COPILOT_API_URL="http://127.0.0.1:8000"
+#   Streamlit Cloud: override in Secrets if you use a different API host
+_DEPLOYED_API_DEFAULT = "https://ai-job-copilot-1.onrender.com"
+API_URL = os.environ.get("AI_JOB_COPILOT_API_URL", _DEPLOYED_API_DEFAULT).rstrip("/")
+
+# If GET /api/indian-states fails (offline API), multiselect still works
+_INDIAN_STATES_FALLBACK = [
+    "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat",
+    "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh",
+    "Maharashtra", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab",
+    "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh",
+    "Uttarakhand", "West Bengal", "Delhi", "Chandigarh", "Jammu and Kashmir", "Ladakh",
+    "Puducherry", "Andaman and Nicobar Islands",
+]
 
 REFINE_WIDGET_KEYS = ("refine_roles", "refine_skills", "refine_locations", "refine_seniority")
+
+
+@st.cache_data(ttl=3600)
+def _cached_indian_states():
+    try:
+        r = requests.get(f"{API_URL}/api/indian-states", timeout=15)
+        r.raise_for_status()
+        data = r.json().get("states")
+        if isinstance(data, list) and data:
+            return tuple(data)
+    except Exception:
+        pass
+    return None
+
+
+def indian_state_options():
+    t = _cached_indian_states()
+    return list(t) if t else list(_INDIAN_STATES_FALLBACK)
 
 
 def sanitize_job_text(value, max_len: int = 500) -> str:
@@ -101,7 +128,7 @@ st.set_page_config(
     page_title="AI Job Copilot",
     page_icon="✨",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded",
 )
 
 # ─────────────────────────────────────────
@@ -128,8 +155,29 @@ html, body, [data-testid="stAppViewContainer"] {
 }
 
 [data-testid="stHeader"], [data-testid="stToolbar"] { display: none !important; }
-[data-testid="stSidebar"] { display: none !important; }
+
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #12121a 0%, #0e0e14 100%) !important;
+    border-right: 1px solid rgba(184, 148, 90, 0.22) !important;
+    min-width: 280px !important;
+}
+[data-testid="stSidebar"] [data-testid="stMarkdown"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span { color: #d4c8b8 !important; }
+[data-testid="stSidebar"] .block-container { padding: 1.25rem 1rem 2rem !important; }
+
 .block-container { max-width: 1100px !important; padding: 3rem 2rem !important; }
+
+.stDownloadButton > button {
+    background: rgba(255,255,255,0.06) !important;
+    color: #e8e0d5 !important;
+    border: 1px solid rgba(184, 148, 90, 0.35) !important;
+    border-radius: 8px !important;
+}
+.stDownloadButton > button:hover {
+    border-color: rgba(184, 148, 90, 0.6) !important;
+    background: rgba(184, 148, 90, 0.12) !important;
+}
 
 /* ── Typography ── */
 h1, h2, h3 { font-family: 'Cormorant Garamond', serif !important; }
@@ -486,8 +534,40 @@ h1, h2, h3 { font-family: 'Cormorant Garamond', serif !important; }
 .source-naukri { color: #e3c97b; }
 .source-simplyhired { color: #7be3d4; }
 .source-careerjet { color: #e37bb4; }
+.sidebar-title {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.68rem;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: #b8945a;
+    margin: 0 0 0.25rem 0;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid rgba(184,148,90,0.2);
+}
 </style>
 """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────
+# SIDEBAR — location filters
+# ─────────────────────────────────────────
+with st.sidebar:
+    st.markdown('<p class="sidebar-title">Filters</p>', unsafe_allow_html=True)
+    st.caption("Applies to company list, matched jobs & manual search.")
+    with st.expander("India & states", expanded=True):
+        india_only_jobs = st.checkbox(
+            "Only **India** locations",
+            value=False,
+            key="cb_india_only",
+            help="Job location text must look Indian. Combine with states to narrow further.",
+        )
+        india_state_pick = st.multiselect(
+            "States / UT (optional)",
+            options=indian_state_options(),
+            default=[],
+            key="ms_india_states",
+            help="Matches state names and major cities in the job location field.",
+        )
 
 
 # ─────────────────────────────────────────
@@ -623,7 +703,8 @@ st.markdown(
     "<strong>Resume</strong> — PDF, Word, or text · "
     "<strong>Company list</strong> — .xlsx with a <strong>Company</strong> column (or names in column C). "
     "For Excel we search <strong>data / business analyst</strong> roles and can "
-    "<strong>fill the Role / Links column</strong> when you download.</p>",
+    "<strong>fill the Role / Links column</strong> when you download. "
+    "Use <strong>Filters</strong> in the left sidebar for India / state.</p>",
     unsafe_allow_html=True,
 )
 
@@ -651,13 +732,47 @@ with col2:
                 value=True,
                 key="cb_fill_excel_links",
             )
-            if st.button("✦  Find analyst jobs at these companies", key="btn_excel_jobs"):
+            c_find, c_dl = st.columns(2, gap="large")
+            with c_find:
+                excel_run = st.button(
+                    "✦  Find analyst jobs at these companies",
+                    use_container_width=True,
+                    key="btn_excel_jobs",
+                )
+            with c_dl:
+                if st.session_state.get("company_excel_bytes"):
+                    st.download_button(
+                        label="✦  Download spreadsheet with links",
+                        data=st.session_state["company_excel_bytes"],
+                        file_name=st.session_state.get(
+                            "company_excel_filename",
+                            "companies_with_job_links.xlsx",
+                        ),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="dl_company_xlsx_persist",
+                    )
+
+            flash_ok = st.session_state.pop("company_excel_success_msg", None)
+            flash_warn = st.session_state.pop("company_excel_warn_msg", None)
+            flash_info = st.session_state.pop("company_excel_info_msg", None)
+            if flash_ok:
+                st.success(flash_ok)
+            if flash_info:
+                st.info(flash_info)
+            if flash_warn:
+                st.warning(flash_warn)
+
+            if excel_run:
+                resp = None
                 with st.spinner(
                     "Searching job boards for each company (this can take a few minutes)..."
                 ):
                     try:
                         form_data = {
                             "fill_spreadsheet": "true" if fill_excel_links else "false",
+                            "india_only": "true" if india_only_jobs else "false",
+                            "india_states": ",".join(india_state_pick),
                         }
                         resp = requests.post(
                             f"{API_URL}/api/jobs-from-companies",
@@ -671,41 +786,59 @@ with col2:
                             data=form_data,
                             timeout=300,
                         )
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            jobs = data.get("results", [])
-                            meta = data.get("meta") or {}
-                            st.session_state["company_jobs"] = jobs
-                            st.success(
-                                f"✦ Searched **{meta.get('companies_searched', '?')}** companies "
-                                f"({meta.get('queries_run', '?')} queries) — **{len(jobs)}** matching analyst roles."
-                            )
-                            b64 = data.get("filled_xlsx_base64")
-                            if b64:
-                                out_name = (
-                                    data.get("filled_filename")
-                                    or "companies_with_job_links.xlsx"
-                                )
-                                st.download_button(
-                                    label="✦ Download spreadsheet with job links filled in",
-                                    data=base64.standard_b64decode(b64),
-                                    file_name=out_name,
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    key="dl_filled_xlsx",
-                                )
-                            if meta.get("raw_unique", 0) and not jobs:
-                                st.warning(
-                                    "Jobs were found but none passed the analyst + company filter. "
-                                    "Try shortening company names to match how job sites display them."
-                                )
-                        else:
-                            st.error(
-                                f"Request failed ({resp.status_code}): {api_error_message(resp)}"
-                            )
                     except requests.exceptions.Timeout:
                         st.error("Timed out — try a smaller list or run again.")
                     except Exception as e:
                         st.error(f"Error: {e}")
+
+                if resp is not None:
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        jobs = data.get("results", [])
+                        meta = data.get("meta") or {}
+                        st.session_state["company_jobs"] = jobs
+                        ind_parts = []
+                        if meta.get("india_only"):
+                            ind_parts.append("India only")
+                        if meta.get("india_states"):
+                            ind_parts.append(
+                                f"states: {', '.join(meta.get('india_states', []))}"
+                            )
+                        ind_note = f" ({'; '.join(ind_parts)})" if ind_parts else ""
+                        st.session_state["company_excel_success_msg"] = (
+                            f"✦ Searched **{meta.get('companies_searched', '?')}** companies "
+                            f"({meta.get('queries_run', '?')} queries) — **{len(jobs)}** "
+                            f"matching analyst roles{ind_note}."
+                        )
+                        b64 = data.get("filled_xlsx_base64")
+                        if b64:
+                            out_name = (
+                                data.get("filled_filename")
+                                or "companies_with_job_links.xlsx"
+                            )
+                            st.session_state["company_excel_bytes"] = (
+                                base64.standard_b64decode(b64)
+                            )
+                            st.session_state["company_excel_filename"] = out_name
+                        else:
+                            st.session_state.pop("company_excel_bytes", None)
+                            st.session_state.pop("company_excel_filename", None)
+                            if fill_excel_links:
+                                st.session_state["company_excel_info_msg"] = (
+                                    "No filled spreadsheet in the response. "
+                                    "Redeploy the backend with the latest code if this persists."
+                                )
+                        if meta.get("raw_unique", 0) and not jobs:
+                            st.session_state["company_excel_warn_msg"] = (
+                                "Jobs were found but none passed the analyst + company filter. "
+                                "Try shortening company names to match how job sites display them."
+                            )
+                        st.rerun()
+                    else:
+                        st.error(
+                            f"Request failed ({resp.status_code}): {api_error_message(resp)}"
+                        )
+
         else:
             if st.button("✦  Analyze Resume"):
                 with st.spinner("Reading your story..."):
@@ -792,6 +925,8 @@ if "profile" in st.session_state:
                     "(comma-separated), then try again."
                 )
             else:
+                payload["india_only"] = bool(india_only_jobs)
+                payload["india_states"] = list(india_state_pick)
                 with st.spinner("Searching across LinkedIn, Indeed, RemoteOK and more..."):
                     try:
                         response = requests.post(
@@ -853,7 +988,9 @@ if search_clicked and query.strip():
                 "experience_years": 0,
                 "education": [],
                 "preferred_locations": ["Worldwide"],
-                "seniority_level": ""
+                "seniority_level": "",
+                "india_only": bool(india_only_jobs),
+                "india_states": list(india_state_pick),
             }
             response = requests.post(
                 f"{API_URL}/api/jobs",

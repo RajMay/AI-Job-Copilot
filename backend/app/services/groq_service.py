@@ -199,7 +199,10 @@ Resume:
 
 def generate_job_queries(profile: dict) -> list:
     queries = []
+    india_only = bool(profile.get("india_only"))
     locations = profile.get("preferred_locations") or ["Worldwide"]
+    if india_only:
+        locations = ["India"]
     seniority = profile.get("seniority_level", "")
 
     for role in profile.get("roles", []):
@@ -208,7 +211,8 @@ def generate_job_queries(profile: dict) -> list:
             queries.append(f"{prefix}{role} {location}".strip())
 
     if not queries:
+        loc = "India" if india_only else "Worldwide"
         for skill in profile.get("skills", [])[:3]:
-            queries.append(f"{skill} developer Worldwide")
+            queries.append(f"{skill} developer {loc}")
 
     return queries[:5]

@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List
 
 from app.services.job_search_service import search_jobs_from_resume
+from app.services.location_filter import INDIAN_STATES_UT
 
 router = APIRouter()
 
@@ -14,6 +15,14 @@ class ResumeProfile(BaseModel):
     education: List[str] = []
     preferred_locations: List[str] = []
     seniority_level: str = ""
+    india_only: bool = False
+    india_states: List[str] = []
+
+
+@router.get("/indian-states")
+def list_indian_states():
+    """State/UT names for location filters (same as Streamlit multiselect)."""
+    return {"states": INDIAN_STATES_UT}
 
 
 @router.post("/jobs")
