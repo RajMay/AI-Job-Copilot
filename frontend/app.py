@@ -1,7 +1,15 @@
+import base64
+import os
+
 import streamlit as st
 import requests
 
-API_URL = "https://ai-job-copilot-1.onrender.com"
+# Production default: deployed API. For local backend, set before `streamlit run`:
+#   Windows PowerShell:  $env:AI_JOB_COPILOT_API_URL="http://127.0.0.1:8000"
+#   Streamlit Cloud:     AI_JOB_COPILOT_API_URL in Secrets or app settings if URL differs
+API_URL = os.environ.get(
+    "AI_JOB_COPILOT_API_URL", "https://ai-job-copilot-1.onrender.com"
+).rstrip("/")
 
 REFINE_WIDGET_KEYS = ("refine_roles", "refine_skills", "refine_locations", "refine_seniority")
 
@@ -26,8 +34,26 @@ def api_error_message(response: requests.Response) -> str:
     return response.text or "Unknown error"
 
 
+def seed_refine_keys_from_profile():
+    """Ensure widget keys exist (run before text_input/selectbox; not inside lazy expanders)."""
+    if "profile" not in st.session_state:
+        return
+    profile = st.session_state["profile"]
+    if "refine_roles" not in st.session_state:
+        st.session_state["refine_roles"] = ", ".join(profile.get("roles", []))
+    if "refine_skills" not in st.session_state:
+        st.session_state["refine_skills"] = ", ".join(profile.get("skills", [])[:12])
+    if "refine_locations" not in st.session_state:
+        locs = profile.get("preferred_locations", [])
+        st.session_state["refine_locations"] = ", ".join(locs) if locs else "Worldwide"
+    seniority_options = ["", "Junior", "Mid", "Senior", "Lead"]
+    if "refine_seniority" not in st.session_state:
+        s = (profile.get("seniority_level") or "").strip()
+        st.session_state["refine_seniority"] = s if s in seniority_options else ""
+
+
 def sync_profile_from_refine_widgets():
-    """Copy expander field values into profile every run so Find Jobs uses current text."""
+    """Copy refine widget values into profile every run so Find Jobs uses current text."""
     if "profile" not in st.session_state:
         return
     if "refine_roles" in st.session_state:
@@ -510,6 +536,10 @@ def render_job_cards(jobs: list):
         src_cls = source_class(source)
 
         link_html = f'<a class="job-link" href="{link}" target="_blank">View Position →</a>' if link and link != "N/A" else ""
+        list_co = job.get("matched_sheet_company") or ""
+        list_html = (
+            f"<div class='job-location'>✦ From your list: {list_co}</div>" if list_co else ""
+        )
 
         cards_html += f"""
         <div class="job-card">
@@ -517,6 +547,7 @@ def render_job_cards(jobs: list):
             <div class="job-title">{title}</div>
             <div class="job-company">{company}</div>
             {"<div class='job-location'>📍 " + location + "</div>" if location and location != "N/A" else ""}
+            {list_html}
             {link_html}
         </div>"""
 
@@ -541,53 +572,140 @@ st.markdown("""
 <div class="hero">
     <div class="hero-eyebrow">✦ AI-Powered Career Discovery</div>
     <div class="hero-title">Find Your<br><em>Dream Role</em></div>
-    <div class="hero-subtitle">Upload your resume and let AI match you with opportunities across the world</div>
+    <div class="hero-subtitle">Upload your resume—or a company list in Excel—to discover analyst roles</div>
 </div>
 <div class="divider"></div>
 """, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────
-# UPLOAD SECTION
+# UPLOAD SECTION (resume OR company spreadsheet)
 # ─────────────────────────────────────────
-section_header("Upload Resume")
+section_header("Upload")
+
+st.markdown(
+    "<p style='color:#8a8070;font-size:0.9rem;margin:0 0 1rem;text-align:center;'>"
+    "<strong>Resume</strong> — PDF, Word, or text · "
+    "<strong>Company list</strong> — .xlsx with a <strong>Company</strong> column (or names in column C). "
+    "For Excel we search <strong>data / business analyst</strong> roles and can "
+    "<strong>fill the Role / Links column</strong> when you download.</p>",
+    unsafe_allow_html=True,
+)
 
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     uploaded_file = st.file_uploader(
-        "Drop your resume here",
-        type=["pdf", "docx", "txt"],
-        label_visibility="collapsed"
+        "Resume or company spreadsheet",
+        type=["pdf", "docx", "txt", "xlsx"],
+        label_visibility="collapsed",
     )
 
     if uploaded_file:
-        st.markdown(f"<div style='text-align:center; font-size:0.8rem; color:#b8945a; margin:0.5rem 0;'>📄 {uploaded_file.name}</div>", unsafe_allow_html=True)
+        fname = uploaded_file.name or ""
+        is_xlsx = fname.lower().endswith(".xlsx")
+        icon = "📊" if is_xlsx else "📄"
+        st.markdown(
+            f"<div style='text-align:center; font-size:0.8rem; color:#b8945a; margin:0.5rem 0;'>"
+            f"{icon} {fname}</div>",
+            unsafe_allow_html=True,
+        )
 
-        if st.button("✦  Analyze Resume"):
-            with st.spinner("Reading your story..."):
-                try:
-                    response = requests.post(
-                        f"{API_URL}/api/upload-resume",
-                        files={"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)},
-                        timeout=60
-                    )
-                    if response.status_code == 200:
-                        data = response.json()
-                        if "profile" in data:
-                            clear_refine_widget_keys()
-                            st.session_state["profile"] = data["profile"]
-                            st.success("✦ Resume analyzed successfully")
-                            warn = data.get("warning")
-                            if warn:
-                                st.warning(warn)
+        if is_xlsx:
+            fill_excel_links = st.checkbox(
+                "Put job links in the spreadsheet (Role / Links column, matched to each company)",
+                value=True,
+                key="cb_fill_excel_links",
+            )
+            if st.button("✦  Find analyst jobs at these companies", key="btn_excel_jobs"):
+                with st.spinner(
+                    "Searching job boards for each company (this can take a few minutes)..."
+                ):
+                    try:
+                        form_data = {
+                            "fill_spreadsheet": "true" if fill_excel_links else "false",
+                        }
+                        resp = requests.post(
+                            f"{API_URL}/api/jobs-from-companies",
+                            files={
+                                "file": (
+                                    uploaded_file.name,
+                                    uploaded_file.getvalue(),
+                                    uploaded_file.type,
+                                )
+                            },
+                            data=form_data,
+                            timeout=300,
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            jobs = data.get("results", [])
+                            meta = data.get("meta") or {}
+                            st.session_state["company_jobs"] = jobs
+                            st.success(
+                                f"✦ Searched **{meta.get('companies_searched', '?')}** companies "
+                                f"({meta.get('queries_run', '?')} queries) — **{len(jobs)}** matching analyst roles."
+                            )
+                            b64 = data.get("filled_xlsx_base64")
+                            if b64:
+                                out_name = (
+                                    data.get("filled_filename")
+                                    or "companies_with_job_links.xlsx"
+                                )
+                                st.download_button(
+                                    label="✦ Download spreadsheet with job links filled in",
+                                    data=base64.standard_b64decode(b64),
+                                    file_name=out_name,
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="dl_filled_xlsx",
+                                )
+                            if meta.get("raw_unique", 0) and not jobs:
+                                st.warning(
+                                    "Jobs were found but none passed the analyst + company filter. "
+                                    "Try shortening company names to match how job sites display them."
+                                )
                         else:
-                            st.error("No profile returned")
-                    else:
-                        st.error(f"Failed ({response.status_code}): {response.text}")
-                except requests.exceptions.Timeout:
-                    st.error("Request timed out — try again")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                            st.error(
+                                f"Request failed ({resp.status_code}): {api_error_message(resp)}"
+                            )
+                    except requests.exceptions.Timeout:
+                        st.error("Timed out — try a smaller list or run again.")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        else:
+            if st.button("✦  Analyze Resume"):
+                with st.spinner("Reading your story..."):
+                    try:
+                        response = requests.post(
+                            f"{API_URL}/api/upload-resume",
+                            files={
+                                "file": (
+                                    uploaded_file.name,
+                                    uploaded_file.getvalue(),
+                                    uploaded_file.type,
+                                )
+                            },
+                            timeout=60,
+                        )
+                        if response.status_code == 200:
+                            data = response.json()
+                            if "profile" in data:
+                                clear_refine_widget_keys()
+                                st.session_state["profile"] = data["profile"]
+                                st.success("✦ Resume analyzed successfully")
+                                warn = data.get("warning")
+                                if warn:
+                                    st.warning(warn)
+                            else:
+                                st.error("No profile returned")
+                        else:
+                            st.error(f"Failed ({response.status_code}): {response.text}")
+                    except requests.exceptions.Timeout:
+                        st.error("Request timed out — try again")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+if st.session_state.get("company_jobs"):
+    render_job_cards(st.session_state["company_jobs"])
 
 
 # ─────────────────────────────────────────
@@ -596,32 +714,23 @@ with col2:
 if "profile" in st.session_state:
     section_header("Your Profile")
 
-    # Edit expander (syncs into profile below so Dream Jobs uses what you type)
-    with st.expander("✎  Refine before searching"):
-        profile = st.session_state["profile"]
-        if "refine_roles" not in st.session_state:
-            st.session_state["refine_roles"] = ", ".join(profile.get("roles", []))
-        if "refine_skills" not in st.session_state:
-            st.session_state["refine_skills"] = ", ".join(profile.get("skills", [])[:12])
-        if "refine_locations" not in st.session_state:
-            locs = profile.get("preferred_locations", [])
-            st.session_state["refine_locations"] = ", ".join(locs) if locs else "Worldwide"
-        seniority_options = ["", "Junior", "Mid", "Senior", "Lead"]
-        if "refine_seniority" not in st.session_state:
-            s = (profile.get("seniority_level") or "").strip()
-            st.session_state["refine_seniority"] = s if s in seniority_options else ""
+    # Seed keys before any widgets (Streamlit expanders may not mount children while collapsed.)
+    seed_refine_keys_from_profile()
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.text_input("Roles (comma-separated)", key="refine_roles")
-            st.text_input("Locations (comma-separated)", key="refine_locations")
-        with c2:
-            st.selectbox(
-                "Seniority",
-                seniority_options,
-                key="refine_seniority",
-            )
-            st.text_input("Key skills (comma-separated)", key="refine_skills")
+    st.markdown(
+        "<p style='color:#8a8070;font-size:0.9rem;margin:0.4rem 0 0.8rem;'>"
+        "Job search uses the fields below. Add <strong>at least one role or skill</strong> "
+        "(comma-separated) if your resume summary is empty.</p>",
+        unsafe_allow_html=True,
+    )
+    seniority_options = ["", "Junior", "Mid", "Senior", "Lead"]
+    rc1, rc2 = st.columns(2)
+    with rc1:
+        st.text_input("Target roles (comma-separated)", key="refine_roles")
+        st.text_input("Locations (comma-separated)", key="refine_locations")
+    with rc2:
+        st.text_input("Key skills (comma-separated)", key="refine_skills")
+        st.selectbox("Seniority", seniority_options, key="refine_seniority")
 
     sync_profile_from_refine_widgets()
     render_profile_card(st.session_state["profile"])
@@ -634,11 +743,18 @@ if "profile" in st.session_state:
     with col_b:
         if st.button("✦  Find My Dream Jobs"):
             sync_profile_from_refine_widgets()
-            payload = st.session_state["profile"]
+            payload = dict(st.session_state["profile"])
+            # Prefer live widget strings so the request always matches what the user typed
+            rraw = (st.session_state.get("refine_roles") or "").strip()
+            sraw = (st.session_state.get("refine_skills") or "").strip()
+            if rraw:
+                payload["roles"] = [x.strip() for x in rraw.split(",") if x.strip()]
+            if sraw:
+                payload["skills"] = [x.strip() for x in sraw.split(",") if x.strip()]
             if not payload.get("roles") and not payload.get("skills"):
                 st.error(
-                    "Add at least one target role or skill under **Refine before searching** "
-                    "(comma-separated), then try again. The API needs this to build search queries."
+                    "Add at least one **target role** or **key skill** in the fields above "
+                    "(comma-separated), then try again."
                 )
             else:
                 with st.spinner("Searching across LinkedIn, Indeed, RemoteOK and more..."):
@@ -685,7 +801,11 @@ section_header("Manual Search")
 
 col1, col2 = st.columns([3, 1])
 with col1:
-    query = st.text_input("", placeholder="e.g.  Python Developer  ·  Data Scientist  ·  UX Designer", label_visibility="collapsed")
+    query = st.text_input(
+        "Search keywords",
+        placeholder="e.g.  Python Developer  ·  Data Scientist  ·  UX Designer",
+        label_visibility="collapsed",
+    )
 with col2:
     search_clicked = st.button("✦  Search")
 

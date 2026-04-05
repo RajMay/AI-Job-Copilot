@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routes import resume, jobs
+from app.routes import resume, jobs, company_jobs
 import asyncio
 import sys
 
@@ -10,6 +10,7 @@ app = FastAPI(title="AI Job Copilot API")
 
 app.include_router(resume.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(company_jobs.router, prefix="/api")
 
 @app.get("/")
 def health_check():

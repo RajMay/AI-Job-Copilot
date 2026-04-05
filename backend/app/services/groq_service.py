@@ -1,10 +1,12 @@
 import os
 import json
 import re
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from groq import Groq
+
+from app.services.resume_heuristics import boost_profile_from_raw_text
 
 load_dotenv()
 
@@ -17,6 +19,12 @@ if not GROQ_API_KEY:
     )
 
 client = Groq(api_key=GROQ_API_KEY)
+
+# Stronger model parses JSON more reliably; override with GROQ_EXTRACT_MODEL if needed
+GROQ_EXTRACT_MODEL = os.getenv("GROQ_EXTRACT_MODEL", "llama-3.3-70b-versatile")
+
+# Cap prompt size so the model always has room to finish JSON
+_MAX_RESUME_CHARS = int(os.getenv("GROQ_RESUME_MAX_CHARS", "14000"))
 
 # ✅ Empty/fallback profile so callers always get a valid shape
 EMPTY_PROFILE = {
@@ -74,6 +82,42 @@ def extract_json_from_text(text: str) -> Dict[str, Any]:
         }
 
 
+def _as_str_list(val: Any) -> List[str]:
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [s.strip() for s in re.split(r"[,;|]", val) if s.strip()]
+    if isinstance(val, list):
+        out: List[str] = []
+        for x in val:
+            if isinstance(x, str) and x.strip():
+                out.append(x.strip())
+            elif isinstance(x, dict):
+                t = x.get("title") or x.get("name") or x.get("role")
+                if t and str(t).strip():
+                    out.append(str(t).strip())
+        return out
+    return []
+
+
+def normalize_profile_dict(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce LLM output into the shapes FastAPI and the UI expect."""
+    base = {**EMPTY_PROFILE, **{k: v for k, v in parsed.items() if k != "error"}}
+    base["roles"] = _as_str_list(base.get("roles"))
+    base["skills"] = _as_str_list(base.get("skills"))
+    base["education"] = _as_str_list(base.get("education"))
+    locs = _as_str_list(base.get("preferred_locations"))
+    base["preferred_locations"] = locs if locs else ["Worldwide"]
+    sl = base.get("seniority_level")
+    base["seniority_level"] = str(sl).strip() if sl not in (None, "") else ""
+    ey = base.get("experience_years", 0)
+    try:
+        base["experience_years"] = max(0, int(float(ey)))
+    except (TypeError, ValueError):
+        base["experience_years"] = 0
+    return base
+
+
 def extract_resume_profile(resume_text: str) -> dict:
     """
     Convert resume text into a structured profile dict using Groq (LLaMA).
@@ -84,65 +128,74 @@ def extract_resume_profile(resume_text: str) -> dict:
         print("⚠️ Empty resume text provided.")
         return EMPTY_PROFILE.copy()
 
+    full_text = resume_text.strip()
+    text_for_prompt = full_text[:_MAX_RESUME_CHARS]
+    if len(full_text) > _MAX_RESUME_CHARS:
+        text_for_prompt += "\n\n[Resume truncated for processing; earlier sections weighted more.]"
+
     prompt = f"""You are an expert resume analyzer.
 
 Extract the following fields from the resume text below.
 If the candidate does not state a headline, infer 1–3 realistic job titles from their work history.
 Always include at least one role OR at least three skills when the resume describes any work, education, or projects.
+Use JSON arrays of strings for roles, skills, education, and preferred_locations only (never a single string).
 
 Return ONLY a valid JSON object. No explanation. No markdown. No extra text.
 
 JSON format:
 {{
-  "roles": ["list of target job titles"],
-  "skills": ["list of technical and soft skills"],
+  "roles": ["target job titles"],
+  "skills": ["technical and soft skills"],
   "experience_years": <integer>,
-  "education": ["list of degrees or certifications"],
-  "preferred_locations": ["list of preferred work locations, or ['Worldwide'] if not specified"],
-  "seniority_level": "<Junior | Mid | Senior | Lead>"
+  "education": ["degrees or certifications"],
+  "preferred_locations": ["locations or Worldwide"],
+  "seniority_level": "Junior|Mid|Senior|Lead or empty string"
 }}
 
 Resume:
-{resume_text}"""
+{text_for_prompt}"""
 
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+    def _call_llm(use_json_mode: bool):
+        kwargs = dict(
+            model=GROQ_EXTRACT_MODEL,
             messages=[
                 {
-                    # ✅ System message forces stricter JSON-only output
                     "role": "system",
-                    "content": "You are a JSON-only resume parser. You output nothing except valid JSON."
+                    "content": "You are a JSON-only resume parser. Output a single valid JSON object and nothing else.",
                 },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "user", "content": prompt},
             ],
             temperature=0,
-            max_tokens=1024  # ✅ Prevents runaway responses
+            max_tokens=2048,
         )
+        if use_json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        return client.chat.completions.create(**kwargs)
+
+    profile: Dict[str, Any] = EMPTY_PROFILE.copy()
+    raw_text: Optional[str] = None
+
+    try:
+        try:
+            response = _call_llm(use_json_mode=True)
+        except Exception as e_json:
+            print(f"⚠️ Groq json_mode failed ({e_json}), retrying without response_format")
+            response = _call_llm(use_json_mode=False)
 
         raw_text = response.choices[0].message.content
-        parsed = extract_json_from_text(raw_text)
+        parsed = extract_json_from_text(raw_text or "")
 
-        # ✅ Check if parsing produced an error dict — fall back gracefully
         if "error" in parsed:
             print(f"⚠️ Profile extraction error: {parsed['error']}")
-            print(f"   Raw output: {parsed.get('raw_output', '')[:200]}")
-            return EMPTY_PROFILE.copy()
-
-        # ✅ Merge with empty profile to ensure all keys exist
-        # (guards against model omitting a field)
-        profile = {**EMPTY_PROFILE, **parsed}
-        return profile
+            print(f"   Raw output: {parsed.get('raw_output', '')[:300]}")
+        else:
+            profile = normalize_profile_dict(parsed)
 
     except Exception as e:
-        # ✅ API failure (rate limit, network, etc.) doesn't crash the app
         print(f"❌ Groq API call failed: {e}")
-        return EMPTY_PROFILE.copy()
-    
-    # ... all your existing groq_service.py code above ...
+
+    profile = boost_profile_from_raw_text(full_text, profile)
+    return profile
 
 def generate_job_queries(profile: dict) -> list:
     queries = []

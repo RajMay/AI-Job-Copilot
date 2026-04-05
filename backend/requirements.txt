@@ -5,7 +5,9 @@ starlette
 pydantic
 python-dotenv
 pypdf
+pymupdf
 python-docx
+openpyxl
 beautifulsoup4
 lxml
 requests
