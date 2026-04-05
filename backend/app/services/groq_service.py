@@ -87,6 +87,8 @@ def extract_resume_profile(resume_text: str) -> dict:
     prompt = f"""You are an expert resume analyzer.
 
 Extract the following fields from the resume text below.
+If the candidate does not state a headline, infer 1–3 realistic job titles from their work history.
+Always include at least one role OR at least three skills when the resume describes any work, education, or projects.
 
 Return ONLY a valid JSON object. No explanation. No markdown. No extra text.
 

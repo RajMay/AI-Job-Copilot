@@ -64,9 +64,17 @@ async def upload_resume(file: UploadFile = File(...)):
                 detail=f"LLM profile extraction failed: {profile['error']}"
             )
 
+        warning = None
+        if not profile.get("roles") and not profile.get("skills"):
+            warning = (
+                "No roles or skills were extracted. Add target roles or skills under "
+                "**Refine before searching**, or use **Manual Search**."
+            )
+
         return {
             "filename": file.filename,  # ✅ Original name for display purposes
-            "profile": profile
+            "profile": profile,
+            "warning": warning,
         }
 
     except HTTPException:

@@ -3,6 +3,47 @@ import requests
 
 API_URL = "https://ai-job-copilot-1.onrender.com"
 
+REFINE_WIDGET_KEYS = ("refine_roles", "refine_skills", "refine_locations", "refine_seniority")
+
+
+def clear_refine_widget_keys():
+    for k in REFINE_WIDGET_KEYS:
+        st.session_state.pop(k, None)
+
+
+def api_error_message(response: requests.Response) -> str:
+    try:
+        body = response.json()
+        detail = body.get("detail")
+        if isinstance(detail, list):
+            return "; ".join(
+                str(x.get("msg", x)) if isinstance(x, dict) else str(x) for x in detail
+            )
+        if detail is not None:
+            return str(detail)
+    except Exception:
+        pass
+    return response.text or "Unknown error"
+
+
+def sync_profile_from_refine_widgets():
+    """Copy expander field values into profile every run so Find Jobs uses current text."""
+    if "profile" not in st.session_state:
+        return
+    if "refine_roles" in st.session_state:
+        r = st.session_state["refine_roles"] or ""
+        st.session_state["profile"]["roles"] = [x.strip() for x in r.split(",") if x.strip()]
+    if "refine_skills" in st.session_state:
+        s = st.session_state["refine_skills"] or ""
+        st.session_state["profile"]["skills"] = [x.strip() for x in s.split(",") if x.strip()]
+    if "refine_locations" in st.session_state:
+        l = st.session_state["refine_locations"] or ""
+        parts = [x.strip() for x in l.split(",") if x.strip()]
+        if parts:
+            st.session_state["profile"]["preferred_locations"] = parts
+    if "refine_seniority" in st.session_state:
+        st.session_state["profile"]["seniority_level"] = st.session_state.get("refine_seniority") or ""
+
 # ─────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────
@@ -533,8 +574,12 @@ with col2:
                     if response.status_code == 200:
                         data = response.json()
                         if "profile" in data:
+                            clear_refine_widget_keys()
                             st.session_state["profile"] = data["profile"]
                             st.success("✦ Resume analyzed successfully")
+                            warn = data.get("warning")
+                            if warn:
+                                st.warning(warn)
                         else:
                             st.error("No profile returned")
                     else:
@@ -550,30 +595,36 @@ with col2:
 # ─────────────────────────────────────────
 if "profile" in st.session_state:
     section_header("Your Profile")
-    render_profile_card(st.session_state["profile"])
 
-    # Edit expander
+    # Edit expander (syncs into profile below so Dream Jobs uses what you type)
     with st.expander("✎  Refine before searching"):
         profile = st.session_state["profile"]
+        if "refine_roles" not in st.session_state:
+            st.session_state["refine_roles"] = ", ".join(profile.get("roles", []))
+        if "refine_skills" not in st.session_state:
+            st.session_state["refine_skills"] = ", ".join(profile.get("skills", [])[:12])
+        if "refine_locations" not in st.session_state:
+            locs = profile.get("preferred_locations", [])
+            st.session_state["refine_locations"] = ", ".join(locs) if locs else "Worldwide"
+        seniority_options = ["", "Junior", "Mid", "Senior", "Lead"]
+        if "refine_seniority" not in st.session_state:
+            s = (profile.get("seniority_level") or "").strip()
+            st.session_state["refine_seniority"] = s if s in seniority_options else ""
+
         c1, c2 = st.columns(2)
         with c1:
-            roles_input = st.text_input("Roles", value=", ".join(profile.get("roles", [])))
-            location_input = st.text_input("Locations", value=", ".join(profile.get("preferred_locations", [])))
+            st.text_input("Roles (comma-separated)", key="refine_roles")
+            st.text_input("Locations (comma-separated)", key="refine_locations")
         with c2:
-            seniority_input = st.selectbox(
+            st.selectbox(
                 "Seniority",
-                ["", "Junior", "Mid", "Senior", "Lead"],
-                index=["", "Junior", "Mid", "Senior", "Lead"].index(profile.get("seniority_level", ""))
-                if profile.get("seniority_level", "") in ["", "Junior", "Mid", "Senior", "Lead"] else 0
+                seniority_options,
+                key="refine_seniority",
             )
-            skills_input = st.text_input("Key Skills", value=", ".join(profile.get("skills", [])[:5]))
+            st.text_input("Key skills (comma-separated)", key="refine_skills")
 
-        if st.button("✦  Update Profile"):
-            st.session_state["profile"]["roles"] = [r.strip() for r in roles_input.split(",") if r.strip()]
-            st.session_state["profile"]["preferred_locations"] = [l.strip() for l in location_input.split(",") if l.strip()]
-            st.session_state["profile"]["seniority_level"] = seniority_input
-            st.session_state["profile"]["skills"] = [s.strip() for s in skills_input.split(",") if s.strip()]
-            st.rerun()
+    sync_profile_from_refine_widgets()
+    render_profile_card(st.session_state["profile"])
 
     # ─────────────────────────────────────────
     # JOB SEARCH
@@ -582,26 +633,36 @@ if "profile" in st.session_state:
     col_a, col_b, col_c = st.columns([1, 2, 1])
     with col_b:
         if st.button("✦  Find My Dream Jobs"):
-            with st.spinner("Searching across LinkedIn, Indeed, RemoteOK and more..."):
-                try:
-                    response = requests.post(
-                        f"{API_URL}/api/jobs",
-                        json=st.session_state["profile"],
-                        timeout=180
-                    )
-                    if response.status_code == 200:
-                        data = response.json()
-                        jobs = data.get("results", [])
-                        if jobs:
-                            st.session_state["jobs"] = jobs
+            sync_profile_from_refine_widgets()
+            payload = st.session_state["profile"]
+            if not payload.get("roles") and not payload.get("skills"):
+                st.error(
+                    "Add at least one target role or skill under **Refine before searching** "
+                    "(comma-separated), then try again. The API needs this to build search queries."
+                )
+            else:
+                with st.spinner("Searching across LinkedIn, Indeed, RemoteOK and more..."):
+                    try:
+                        response = requests.post(
+                            f"{API_URL}/api/jobs",
+                            json=payload,
+                            timeout=180
+                        )
+                        if response.status_code == 200:
+                            data = response.json()
+                            jobs = data.get("results", [])
+                            if jobs:
+                                st.session_state["jobs"] = jobs
+                            else:
+                                st.warning("No jobs found — try refining your profile above")
                         else:
-                            st.warning("No jobs found — try refining your profile above")
-                    else:
-                        st.error(f"Search failed ({response.status_code})")
-                except requests.exceptions.Timeout:
-                    st.error("Search timed out — scraping can be slow, try again")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                            st.error(
+                                f"Search failed ({response.status_code}): {api_error_message(response)}"
+                            )
+                    except requests.exceptions.Timeout:
+                        st.error("Search timed out — scraping can be slow, try again")
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
     if "jobs" in st.session_state:
         render_job_cards(st.session_state["jobs"])
@@ -651,7 +712,9 @@ if search_clicked and query.strip():
                 else:
                     st.warning("No results found — try a different query")
             else:
-                st.error(f"Search failed ({response.status_code})")
+                st.error(
+                    f"Search failed ({response.status_code}): {api_error_message(response)}"
+                )
         except Exception as e:
             st.error(f"Error: {e}")
 
