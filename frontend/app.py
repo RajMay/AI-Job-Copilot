@@ -44,12 +44,18 @@ def indian_state_options():
 
 
 def sanitize_job_text(value, max_len: int = 500) -> str:
-    """Remove HTML tags from scraper noise, then escape so cards render safely."""
+    """Strip HTML / encoded markup from scraper noise, then escape for safe text nodes."""
     if value is None:
         return ""
     text = str(value)
-    text = re.sub(r"<[^>]+>", " ", text, flags=re.IGNORECASE)
-    text = html.unescape(text)
+    # Decode entities (&lt;div&gt; → <div>) and strip tags until stable (handles nested encoding).
+    for _ in range(24):
+        unescaped = html.unescape(text)
+        stripped = re.sub(r"<[^>]+>", " ", unescaped, flags=re.IGNORECASE)
+        if unescaped == text and stripped == text:
+            text = stripped
+            break
+        text = stripped
     text = re.sub(r"\s+", " ", text).strip()
     if max_len and len(text) > max_len:
         text = text[: max_len - 1] + "…"
@@ -631,8 +637,12 @@ def render_job_cards(jobs: list):
         st.markdown(f'<div class="stat-item"><div class="stat-number">{len(sources)}</div><div class="stat-label">Sources Searched</div></div>', unsafe_allow_html=True)
 
     # Cards grid
+    # No leading indentation on HTML lines — Markdown treats 4+ space indent as a code block
+    # and Streamlit would show raw tags in a grey box instead of rendering the card.
     cards_html = '<div class="jobs-grid">'
     for job in jobs:
+        if not isinstance(job, dict):
+            continue
         title = sanitize_job_text(job.get("title") or "Unknown Role")
         company = sanitize_job_text(job.get("company") or "Unknown Company")
         location = sanitize_job_text(job.get("location") or "")
@@ -656,15 +666,14 @@ def render_job_cards(jobs: list):
         if location and job.get("location") not in (None, "", "N/A"):
             loc_block = f"<div class='job-location'>📍 {location}</div>"
 
-        cards_html += f"""
-        <div class="job-card">
-            <div class="job-source-badge {src_cls}">{source}</div>
-            <div class="job-title">{title}</div>
-            <div class="job-company">{company}</div>
-            {loc_block}
-            {list_html}
-            {link_html}
-        </div>"""
+        cards_html += (
+            f'<div class="job-card">'
+            f'<div class="job-source-badge {src_cls}">{source}</div>'
+            f'<div class="job-title">{title}</div>'
+            f'<div class="job-company">{company}</div>'
+            f"{loc_block}{list_html}{link_html}"
+            f"</div>"
+        )
 
     cards_html += "</div>"
     st.markdown(cards_html, unsafe_allow_html=True)
